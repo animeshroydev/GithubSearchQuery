@@ -15,9 +15,13 @@
  */
 package com.example.android.asynctaskloader;
 
-import android.os.AsyncTask;
 import android.os.Bundle;
+import android.support.v4.app.LoaderManager;
+import android.support.v4.content.AsyncTaskLoader;
+import android.support.v4.content.Loader;
 import android.support.v7.app.AppCompatActivity;
+import android.text.TextUtils;
+import android.util.JsonReader;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
@@ -27,16 +31,22 @@ import android.widget.TextView;
 
 import com.example.android.asynctaskloader.utilities.NetworkUtils;
 
+import org.json.JSONArray;
+
 import java.io.IOException;
 import java.net.URL;
 
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends AppCompatActivity implements
+        LoaderManager.LoaderCallbacks<String> {
 
-    // completed (1) Create a static final key to store the query's URL
+    /* A constant to save and restore the URL that is being displayed */
     private static final String SEARCH_QUERY_URL_EXTRA = "query";
 
-    // completed (2) Create a static final key to store the search's raw JSON
-    private static final String SEARCH_RESULT_RAW_JSON = "results";
+    /*
+     * This number will uniquely identify our Loader and is chosen arbitrarily. You can change this
+     * to any number you like, as long as you use the same variable name.
+     */
+    private static final int GITHUB_SEARCH_LOADER = 22;
 
     private EditText mSearchBoxEditText;
 
@@ -61,27 +71,69 @@ public class MainActivity extends AppCompatActivity {
 
         mLoadingIndicator = (ProgressBar) findViewById(R.id.pb_loading_indicator);
 
-        // completed (9) If the savedInstanceState bundle is not null, set the text of the URL and search results TextView respectively
-        if (savedInstanceState != null){
+        if (savedInstanceState != null) {
             String queryUrl = savedInstanceState.getString(SEARCH_QUERY_URL_EXTRA);
-            String rawJsonSearchResults= savedInstanceState.getString(SEARCH_RESULT_RAW_JSON);
 
             mUrlDisplayTextView.setText(queryUrl);
-            mSearchResultsTextView.setText(rawJsonSearchResults);
         }
+
+        /*
+         * Initialize the loader
+         */
+        getSupportLoaderManager().initLoader(GITHUB_SEARCH_LOADER, null, this);
     }
 
     /**
      * This method retrieves the search text from the EditText, constructs the
      * URL (using {@link NetworkUtils}) for the github repository you'd like to find, displays
-     * that URL in a TextView, and finally fires off an AsyncTask to perform the GET request using
-     * our {@link GithubQueryTask}
+     * that URL in a TextView, and finally request that an AsyncTaskLoader performs the GET request.
      */
     private void makeGithubSearchQuery() {
         String githubQuery = mSearchBoxEditText.getText().toString();
+
+        /*
+         * If the user didn't enter anything, there's nothing to search for. In the case where no
+         * search text was entered but the search button was clicked, we will display a message
+         * stating that there is nothing to search for and we will not attempt to load anything.
+         *
+         * If there is text entered in the search box when the search button was clicked, we will
+         * create the URL that will return our Github search results, display that URL, and then
+         * pass that URL to the Loader. The reason we pass the URL as a String is simply a matter
+         * of convenience. There are other ways of achieving this same result, but we felt this
+         * was the simplest.
+         */
+        if (TextUtils.isEmpty(githubQuery)) {
+            mUrlDisplayTextView.setText("No query entered, nothing to search for.");
+            return;
+        }
+
         URL githubSearchUrl = NetworkUtils.buildUrl(githubQuery);
         mUrlDisplayTextView.setText(githubSearchUrl.toString());
-        new GithubQueryTask().execute(githubSearchUrl);
+
+        Bundle queryBundle = new Bundle();
+        queryBundle.putString(SEARCH_QUERY_URL_EXTRA, githubSearchUrl.toString());
+
+        /*
+         * Now that we've created our bundle that we will pass to our Loader, we need to decide
+         * if we should restart the loader (if the loader already existed) or if we need to
+         * initialize the loader (if the loader did NOT already exist).
+         *
+         * We do this by first store the support loader manager in the variable loaderManager.
+         * All things related to the Loader go through through the LoaderManager. Once we have a
+         * hold on the support loader manager, (loaderManager) we can attempt to access our
+         * githubSearchLoader. To do this, we use LoaderManager's method, "getLoader", and pass in
+         * the ID we assigned in its creation. You can think of this process similar to finding a
+         * View by ID. We give the LoaderManager an ID and it returns a loader (if one exists). If
+         * one doesn't exist, we tell the LoaderManager to create one. If one does exist, we tell
+         * the LoaderManager to restart it.
+         */
+        LoaderManager loaderManager = getSupportLoaderManager();
+        Loader<String> githubSearchLoader = loaderManager.getLoader(GITHUB_SEARCH_LOADER);
+        if (githubSearchLoader == null) {
+            loaderManager.initLoader(GITHUB_SEARCH_LOADER, queryBundle, this);
+        } else {
+            loaderManager.restartLoader(GITHUB_SEARCH_LOADER, queryBundle, this);
+        }
     }
 
     /**
@@ -112,36 +164,89 @@ public class MainActivity extends AppCompatActivity {
         mErrorMessageDisplay.setVisibility(View.VISIBLE);
     }
 
-    public class GithubQueryTask extends AsyncTask<URL, Void, String> {
+    @Override
+    public Loader<String> onCreateLoader(int id, final Bundle args) {
+        return new AsyncTaskLoader<String>(this) {
 
-        @Override
-        protected void onPreExecute() {
-            super.onPreExecute();
-            mLoadingIndicator.setVisibility(View.VISIBLE);
-        }
+            // c (1) Create a String member variable called mGithubJson that will store the raw JSON
+            String mGithubJson;
+            @Override
+            protected void onStartLoading() {
 
-        @Override
-        protected String doInBackground(URL... params) {
-            URL searchUrl = params[0];
-            String githubSearchResults = null;
-            try {
-                githubSearchResults = NetworkUtils.getResponseFromHttpUrl(searchUrl);
-            } catch (IOException e) {
-                e.printStackTrace();
+                /* If no arguments were passed, we don't have a query to perform. Simply return. */
+                if (args == null) {
+                    return;
+                }
+
+                /*
+                 * When we initially begin loading in the background, we want to display the
+                 * loading indicator to the user
+                 */
+                mLoadingIndicator.setVisibility(View.VISIBLE);
+
+                // c (2) If mGithubJson is not null, deliver that result. Otherwise, force a load
+                if (mGithubJson != null){
+                    deliverResult(mGithubJson);
+                }
+                forceLoad();
             }
-            return githubSearchResults;
-        }
 
-        @Override
-        protected void onPostExecute(String githubSearchResults) {
-            mLoadingIndicator.setVisibility(View.INVISIBLE);
-            if (githubSearchResults != null && !githubSearchResults.equals("")) {
-                showJsonDataView();
-                mSearchResultsTextView.setText(githubSearchResults);
-            } else {
-                showErrorMessage();
+            @Override
+            public String loadInBackground() {
+
+                /* Extract the search query from the args using our constant */
+                String searchQueryUrlString = args.getString(SEARCH_QUERY_URL_EXTRA);
+
+                /* If the user didn't enter anything, there's nothing to search for */
+                if (searchQueryUrlString == null || TextUtils.isEmpty(searchQueryUrlString)) {
+                    return null;
+                }
+
+                /* Parse the URL from the passed in String and perform the search */
+                try {
+                    URL githubUrl = new URL(searchQueryUrlString);
+                    String githubSearchResults = NetworkUtils.getResponseFromHttpUrl(githubUrl);
+                    return githubSearchResults;
+                } catch (IOException e) {
+                    e.printStackTrace();
+                    return null;
+                }
             }
+
+            // c (3) Override deliverResult and store the data in mGithubJson
+
+            @Override
+            public void deliverResult(String data) {
+                super.deliverResult(data);
+            }
+
+            // c (4) Call super.deliverResult after storing the data
+        };
+    }
+
+    @Override
+    public void onLoadFinished(Loader<String> loader, String data) {
+
+        /* When we finish loading, we want to hide the loading indicator from the user. */
+        mLoadingIndicator.setVisibility(View.INVISIBLE);
+        /*
+         * If the results are null, we assume an error has occurred. There are much more robust
+         * methods for checking errors, but we wanted to keep this particular example simple.
+         */
+        if (null == data) {
+            showErrorMessage();
+        } else {
+            mSearchResultsTextView.setText(data);
+            showJsonDataView();
         }
+    }
+
+    @Override
+    public void onLoaderReset(Loader<String> loader) {
+        /*
+         * We aren't using this method in our example application, but we are required to Override
+         * it to implement the LoaderCallbacks<String> interface
+         */
     }
 
     @Override
@@ -160,26 +265,11 @@ public class MainActivity extends AppCompatActivity {
         return super.onOptionsItemSelected(item);
     }
 
-    // complete (3) Override onSaveInstanceState to persist data across Activity recreation
-
     @Override
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
 
-
-        // Do the following steps within onSaveInstanceState
-        // complete (4) Make sure super.onSaveInstanceState is called before doing anything else
-
-        // completed (5) Put the contents of the TextView that contains our URL into a variable
         String queryUrl = mUrlDisplayTextView.getText().toString();
-
-        // completed (6) Using the key for the query URL, put the string in the outState Bundle
         outState.putString(SEARCH_QUERY_URL_EXTRA, queryUrl);
-
-        // completed (7) Put the contents of the TextView that contains our raw JSON search results into a variable
-        String rawJsonSearchResults = mSearchResultsTextView.getText().toString();
-
-        // completed (8) Using the key for the raw JSON search results, put the search results into the outState Bundle
-        outState.putString(SEARCH_RESULT_RAW_JSON, rawJsonSearchResults);
     }
 }
